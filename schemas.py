@@ -12,37 +12,46 @@ Model name is converted to lowercase for the collection name:
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
+from datetime import datetime
 
-# Example schemas (replace with your own):
+# Core domain for the app: carpool matching for soldiers
 
-class User(BaseModel):
+class Soldier(BaseModel):
     """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
+    Soldiers collection schema
+    Collection name: "soldier"
     """
     name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+    phone: Optional[str] = Field(None, description="Contact phone number")
+    home_area: str = Field(..., description="Home town/area (free text, e.g., 'Haifa', 'South Tel Aviv')")
+    base_name: str = Field(..., description="Assigned base name or nearest base")
+    has_car: bool = Field(False, description="Whether this soldier can drive and offer rides")
+    verified: bool = Field(False, description="Verification status")
 
-class Product(BaseModel):
+class Ride(BaseModel):
     """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
+    Ride offers created by drivers
+    Collection name: "ride"
     """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
+    driver_id: str = Field(..., description="Reference to Soldier _id as string")
+    from_area: str = Field(..., description="Start area/city")
+    to_area: str = Field(..., description="Destination area/city (e.g., base name)")
+    departure_time: datetime = Field(..., description="Planned departure time (ISO datetime)")
+    seats_total: int = Field(..., ge=1, le=8, description="Total seats including driver seat not counted")
+    seats_available: int = Field(..., ge=0, le=8, description="Seats still available")
+    price_per_seat: float = Field(0, ge=0, description="Requested participation per seat")
+    car_info: Optional[str] = Field(None, description="Car model/color/plate last 4")
+    notes: Optional[str] = Field(None, description="Special notes or pickup points")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Searchable tags")
 
-# Add your own schemas here:
-# --------------------------------------------------
-
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class RideRequest(BaseModel):
+    """
+    Join requests to a ride
+    Collection name: "riderequest"
+    """
+    ride_id: str = Field(..., description="Ride id as string")
+    passenger_id: str = Field(..., description="Soldier id as string")
+    seats: int = Field(1, ge=1, le=4, description="Seats requested")
+    status: str = Field("pending", description="pending, accepted, rejected, cancelled")
+    message: Optional[str] = Field(None, description="Optional note to driver")
