@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -54,6 +54,15 @@ class RideRequestIn(BaseModel):
 class RideRequestOut(RideRequestIn):
     id: str
     status: str
+
+
+class MatchRequest(BaseModel):
+    soldier_id: str
+    window_hours: int = 24
+
+class RideSuggestion(BaseModel):
+    ride: RideOut
+    score: float
 
 
 def _to_id_str(doc):
@@ -197,6 +206,74 @@ def list_requests(ride_id: Optional[str] = None, passenger_id: Optional[str] = N
         q["status"] = status
     docs = list(db["riderequest"].find(q).sort("created_at", -1).limit(100))
     return [_to_id_str(d) for d in docs]
+
+
+@app.post("/ai/suggest-rides", response_model=List[RideSuggestion])
+def suggest_rides(payload: MatchRequest):
+    # Validate soldier
+    if not ObjectId.is_valid(payload.soldier_id):
+        raise HTTPException(status_code=400, detail="Invalid soldier_id")
+    soldier = db["soldier"].find_one({"_id": ObjectId(payload.soldier_id)})
+    if not soldier:
+        raise HTTPException(status_code=404, detail="Soldier not found")
+
+    # Time window
+    now = datetime.utcnow()
+    latest = now + timedelta(hours=max(1, min(payload.window_hours, 168)))
+
+    # Fetch upcoming rides
+    query = {"departure_time": {"$gte": now, "$lte": latest}, "seats_available": {"$gt": 0}}
+    rides = list(db["ride"].find(query).limit(200))
+
+    def score_ride(ride):
+        score = 0.0
+        # Origin/destination affinity
+        if soldier.get("home_area") and ride.get("from_area"):
+            if soldier["home_area"].lower() in ride["from_area"].lower() or ride["from_area"].lower() in soldier["home_area"].lower():
+                score += 5
+        if soldier.get("base_name") and ride.get("to_area"):
+            if soldier["base_name"].lower() in ride["to_area"].lower() or ride["to_area"].lower() in soldier["base_name"].lower():
+                score += 5
+        # Time proximity (closer is better)
+        try:
+            dt = ride.get("departure_time")
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt)
+            delta_hours = abs((dt - now).total_seconds()) / 3600.0
+            score += max(0, 6 - min(delta_hours, 6))  # up to +6 if within hours
+        except Exception:
+            pass
+        # Seats available bonus
+        score += min(ride.get("seats_available", 0), 4) * 0.5
+        # Price sensitivity (cheaper better)
+        price = ride.get("price_per_seat", 0) or 0
+        score += max(0, 3 - min(price / 10.0, 3))  # +3 if free, taper off with price
+        return score
+
+    scored = [
+        {"ride": _to_id_str(r.copy()), "score": round(score_ride(r), 2)} for r in rides
+    ]
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    # Convert to Pydantic-friendly output with RideOut
+    result: List[RideSuggestion] = []
+    for item in scored[:50]:
+        ride_doc = item["ride"]
+        # Ensure keys match RideOut fields
+        ride_out = RideOut(**{
+            "id": ride_doc["id"],
+            "driver_id": ride_doc.get("driver_id"),
+            "from_area": ride_doc.get("from_area"),
+            "to_area": ride_doc.get("to_area"),
+            "departure_time": ride_doc.get("departure_time"),
+            "seats_total": ride_doc.get("seats_total"),
+            "price_per_seat": ride_doc.get("price_per_seat", 0),
+            "car_info": ride_doc.get("car_info"),
+            "notes": ride_doc.get("notes"),
+            "tags": ride_doc.get("tags"),
+            "seats_available": ride_doc.get("seats_available", 0),
+        })
+        result.append(RideSuggestion(ride=ride_out, score=item["score"]))
+    return result
 
 
 @app.get("/test")
